@@ -27,6 +27,6 @@ tqdm
 textstat
 huggingface_hub
 spaces
-
+uvicorn
 WeTextProcessing; platform_machine != "Darwin"
 wetext; platform_system == "Darwin"
