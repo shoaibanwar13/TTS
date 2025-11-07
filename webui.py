@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import FileResponse
+from contextlib import asynccontextmanager
 import os
 import sys
 import time
@@ -16,13 +17,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, "indextts"))
 
-# Import IndexTTS
-from indextts.infer_v2 import IndexTTS2
-from tools.download_files import download_model_from_huggingface
-
-# Initialize FastAPI app
-app = FastAPI(title="IndexTTS API", version="2.0")
-
 # Configuration
 MODEL_DIR = "./checkpoints"
 OUTPUT_DIR = "./outputs"
@@ -38,26 +32,52 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 tts_model = None
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the TTS model on startup"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
     global tts_model
     
-    # Download model if needed
-    download_model_from_huggingface(
-        os.path.join(current_dir, "checkpoints"),
-        os.path.join(current_dir, "checkpoints", "hf_cache")
-    )
+    try:
+        # Import IndexTTS
+        from indextts.infer_v2 import IndexTTS2
+        from tools.download_files import download_model_from_huggingface
+        
+        print("Downloading/checking model files...")
+        # Download model if needed
+        download_model_from_huggingface(
+            os.path.join(current_dir, "checkpoints"),
+            os.path.join(current_dir, "checkpoints", "hf_cache")
+        )
+        
+        print("Loading TTS model...")
+        # Initialize TTS model
+        tts_model = IndexTTS2(
+            model_dir=MODEL_DIR,
+            cfg_path=os.path.join(MODEL_DIR, "config.yaml"),
+            use_fp16=USE_FP16,
+            use_deepspeed=USE_DEEPSPEED,
+            use_cuda_kernel=USE_CUDA_KERNEL,
+        )
+        print("TTS model loaded successfully!")
+        
+    except Exception as e:
+        print(f"Error loading TTS model: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     
-    # Initialize TTS model
-    tts_model = IndexTTS2(
-        model_dir=MODEL_DIR,
-        cfg_path=os.path.join(MODEL_DIR, "config.yaml"),
-        use_fp16=USE_FP16,
-        use_deepspeed=USE_DEEPSPEED,
-        use_cuda_kernel=USE_CUDA_KERNEL,
-    )
-    print("TTS model loaded successfully!")
+    yield  # Server is running
+    
+    # Cleanup on shutdown
+    print("Shutting down...")
+
+
+# Initialize FastAPI app with lifespan
+app = FastAPI(
+    title="IndexTTS API",
+    version="2.0",
+    lifespan=lifespan
+)
 
 
 @app.post("/generate")
@@ -90,6 +110,8 @@ async def generate_speech(
     if not text or len(text.strip()) == 0:
         raise HTTPException(status_code=400, detail="Text cannot be empty")
     
+    ref_audio_path = None
+    
     try:
         # Save uploaded reference audio temporarily
         timestamp = int(time.time())
@@ -114,6 +136,8 @@ async def generate_speech(
             "max_mel_tokens": int(max_mel_tokens),
         }
         
+        print(f"Generating speech for text: {text[:50]}...")
+        
         # Generate speech
         output = tts_model.infer(
             spk_audio_prompt=ref_audio_path,
@@ -131,7 +155,7 @@ async def generate_speech(
         )
         
         # Clean up reference audio
-        if os.path.exists(ref_audio_path):
+        if ref_audio_path and os.path.exists(ref_audio_path):
             os.remove(ref_audio_path)
         
         # Return generated audio file
@@ -147,8 +171,12 @@ async def generate_speech(
             
     except Exception as e:
         # Clean up on error
-        if os.path.exists(ref_audio_path):
+        if ref_audio_path and os.path.exists(ref_audio_path):
             os.remove(ref_audio_path)
+        
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error during generation: {error_details}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
 
@@ -177,8 +205,9 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(
-        app,
+        "webui:app",  # Use import string format
         host="0.0.0.0",
         port=8000,
+        reload=False,  # Set to False in production
         log_level="info"
     )
