@@ -389,4 +389,4 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
 
 if __name__ == "__main__":
     demo.queue(20)
-    demo.launch(server_name=cmd_args.host, server_port=8000)
+    demo.launch(server_name=0.0.0.0, server_port=8000)
